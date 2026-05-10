@@ -3,7 +3,7 @@ import logging
 from dotenv import load_dotenv
 import os
 
-from telegram import Update, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -68,8 +68,14 @@ def build_menu_text(title: str, options: dict) -> str:
     return "\n".join(lines)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.clear()
+def build_keyboard(options: dict) -> ReplyKeyboardMarkup:
+    """Number buttons in rows of 3."""
+    keys = list(options.keys())
+    rows = [keys[i:i + 3] for i in range(0, len(keys), 3)]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+async def show_category_menu(update: Update) -> None:
     category_options = {k: v[0] for k, v in CATEGORIES.items()}
     text = (
         "Welcome to Leadgen Bot! 👋\n"
@@ -78,7 +84,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         + build_menu_text("Please select your lead type:", category_options)
     )
-    await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(text, reply_markup=build_keyboard(category_options))
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await show_category_menu(update)
     return CATEGORY
 
 
@@ -87,7 +98,8 @@ async def category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if choice not in CATEGORIES:
         category_options = {k: v[0] for k, v in CATEGORIES.items()}
         await update.message.reply_text(
-            "❌ Invalid option. " + build_menu_text("Please select your lead type:", category_options)
+            "❌ Invalid option. " + build_menu_text("Please select your lead type:", category_options),
+            reply_markup=build_keyboard(category_options),
         )
         return CATEGORY
 
@@ -95,7 +107,8 @@ async def category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["category"] = cat_name
     context.user_data["subtypes"] = subtypes
     await update.message.reply_text(
-        build_menu_text(f"Please select {cat_name} type:", subtypes)
+        build_menu_text(f"Please select {cat_name} type:", subtypes),
+        reply_markup=build_keyboard(subtypes),
     )
     return LEAD_TYPE
 
@@ -107,12 +120,16 @@ async def lead_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text(
             "❌ Invalid option. " + build_menu_text(
                 f"Please select {context.user_data['category']} type:", subtypes
-            )
+            ),
+            reply_markup=build_keyboard(subtypes),
         )
         return LEAD_TYPE
 
     context.user_data["lead_type"] = subtypes[choice]
-    await update.message.reply_text("Enter customer's full name:")
+    await update.message.reply_text(
+        "Enter customer's full name:",
+        reply_markup=ReplyKeyboardRemove(),
+    )
     return NAME
 
 
@@ -139,7 +156,8 @@ async def mobile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     context.user_data["mobile"] = text
     await update.message.reply_text(
-        build_menu_text("Please select income range:", INCOME_OPTIONS)
+        build_menu_text("Please select income range:", INCOME_OPTIONS),
+        reply_markup=build_keyboard(INCOME_OPTIONS),
     )
     return INCOME
 
@@ -148,7 +166,8 @@ async def income(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     choice = update.message.text.strip()
     if choice not in INCOME_OPTIONS:
         await update.message.reply_text(
-            "❌ Invalid option. " + build_menu_text("Please select income range:", INCOME_OPTIONS)
+            "❌ Invalid option. " + build_menu_text("Please select income range:", INCOME_OPTIONS),
+            reply_markup=build_keyboard(INCOME_OPTIONS),
         )
         return INCOME
 
@@ -168,31 +187,39 @@ async def income(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"2) No\n\n"
         f"Please enter your option:"
     )
-    await update.message.reply_text(summary)
+    await update.message.reply_text(
+        summary,
+        reply_markup=build_keyboard({"1": "Yes", "2": "No"}),
+    )
     return CONFIRM
 
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     choice = update.message.text.strip()
     if choice == "1":
-        await update.message.reply_text("✅ Lead captured successfully!")
+        await update.message.reply_text("✅ Lead captured successfully!\n\nStarting a new lead...")
+        context.user_data.clear()
+        await show_category_menu(update)
+        return CATEGORY
     elif choice == "2":
-        await update.message.reply_text("❌ Cancelled. Send /start to begin again.")
+        await update.message.reply_text("❌ Lead cancelled.\n\nStarting a new lead...")
+        context.user_data.clear()
+        await show_category_menu(update)
+        return CATEGORY
     else:
         await update.message.reply_text(
             "❌ Invalid option. Please enter 1 for Yes or 2 for No.\n\n"
-            "1) Yes\n2) No\n\nPlease enter your option:"
+            "1) Yes\n2) No\n\nPlease enter your option:",
+            reply_markup=build_keyboard({"1": "Yes", "2": "No"}),
         )
         return CONFIRM
-
-    context.user_data.clear()
-    return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text("Cancelled. Send /start to begin again.")
-    return ConversationHandler.END
+    await update.message.reply_text("Cancelled.\n\nStarting a new lead...")
+    await show_category_menu(update)
+    return CATEGORY
 
 
 def main() -> None:
@@ -202,7 +229,10 @@ def main() -> None:
     app = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, start),
+        ],
         states={
             CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, category)],
             LEAD_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, lead_type)],
